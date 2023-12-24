@@ -1286,24 +1286,61 @@ class LocalTrade:
 
     @staticmethod
     def stoploss_reinitialization(desired_stoploss: float):
-        """
-        Adjust initial Stoploss to desired stoploss for all open trades.
-        """
-        trade: Trade
-        for trade in Trade.get_open_trades():
-            logger.info(f"Found open trade: {trade}")
+      """
+      Adjust initial Stoploss to the desired stoploss for all open trades.
+      Args:
+          desired_stoploss (float): Desired stoploss percentage, between 0 and 100.
+      """
+  
+      # Validate input
+      if not isinstance(desired_stoploss, (int, float)):
+          logger.error("Invalid input type for desired stoploss. It must be a number.")
+          return
+  
+      if not 0 <= desired_stoploss <= 100:
+          logger.error("Desired stoploss must be between 0 and 100 percent.")
+          return
+  
+      successful_adjustments, adjustments_skipped, errors_encountered = 0, 0, 0
+  
+      # Get open trades and ensure there are trades to process
+      open_trades = Trade.get_open_trades()
+      if not open_trades:
+          logger.info("No open trades to adjust.")
+          return
+  
+      for trade in open_trades:
+          try:
+              logger.info(f"Evaluating open trade: {trade}")
+  
+              # Skip trades with specific conditions
+              if trade.is_stop_loss_trailing:
+                  logger.info(f"Skipping {trade}: Trailing stop loss active.")
+                  adjustments_skipped += 1
+                  continue
+  
+              if trade.initial_stop_loss_pct == desired_stoploss:
+                  logger.info(f"Skipping {trade}: Already at desired stop loss level.")
+                  adjustments_skipped += 1
+                  continue
+  
+              # Adjust stop loss if needed
+              if trade.current_stop_loss_pct > desired_stoploss:
+                  previous_stop_loss = trade.current_stop_loss_pct
+                  trade.adjust_stop_loss(trade.open_rate, desired_stoploss)
+                  logger.info(f"Stoploss for {trade} adjusted from {previous_stop_loss}% to {desired_stoploss}%.")
+                  successful_adjustments += 1
+              else:
+                  logger.info(f"Current stoploss for {trade} is already optimal or lower. No adjustment made.")
+                  adjustments_skipped += 1
+  
+          except Exception as e:
+              logger.error(f"Error processing trade {trade}: {e}")
+              errors_encountered += 1
+  
+      # Summary log
+      logger.info(f"Stoploss adjustment summary: {successful_adjustments} adjusted, {adjustments_skipped} skipped, {errors_encountered} errors encountered.")
 
-            # skip case if trailing-stop changed the stoploss already.
-            if (not trade.is_stop_loss_trailing
-                    and trade.initial_stop_loss_pct != desired_stoploss):
-                # Stoploss value got changed
-
-                logger.info(f"Stoploss for {trade} needs adjustment...")
-                # Force reset of stoploss
-                trade.stop_loss = 0.0
-                trade.initial_stop_loss_pct = None
-                trade.adjust_stop_loss(trade.open_rate, desired_stoploss)
-                logger.info(f"New stoploss: {trade.stop_loss}.")
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:
