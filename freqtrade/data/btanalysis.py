@@ -379,18 +379,36 @@ def analyze_trade_parallelism(results: pd.DataFrame, timeframe: str) -> pd.DataF
     return df_final
 
 
-def evaluate_result_multi(results: pd.DataFrame, timeframe: str,
-                          max_open_trades: IntOrInf) -> pd.DataFrame:
+def evaluate_result_multi(results: pd.DataFrame, timeframe: str, max_open_trades: int) -> pd.DataFrame:
     """
     Find overlapping trades by expanding each trade once per period it was open
-    and then counting overlaps
-    :param results: Results Dataframe - can be loaded
+    and then counting overlaps.
+    :param results: Results DataFrame - can be loaded
     :param timeframe: Frequency used for the backtest
-    :param max_open_trades: parameter max_open_trades used during backtest run
-    :return: dataframe with open-counts per time-period in freq
+    :param max_open_trades: Maximum allowed open trades at any given time
+    :return: DataFrame with open-counts per time-period in the specified timeframe
     """
-    df_final = analyze_trade_parallelism(results, timeframe)
-    return df_final[df_final['open_trades'] > max_open_trades]
+    # Ensure the 'open_date' and 'close_date' columns are in datetime format
+    results['open_date'] = pd.to_datetime(results['open_date'])
+    results['close_date'] = pd.to_datetime(results['close_date'])
+
+    # Create a date range for the entire backtest period with the specified timeframe
+    min_date = results['open_date'].min().floor(timeframe)
+    max_date = results['close_date'].max().ceil(timeframe)
+    date_range = pd.date_range(start=min_date, end=max_date, freq=timeframe)
+
+    # Create a DataFrame with the date range
+    df_final = pd.DataFrame({'date': date_range})
+
+    # Count the number of overlapping trades for each time period using vectorized operations
+    mask = ((results['open_date'].values <= df_final['date'].values[:, None]) &
+            (results['close_date'].values >= df_final['date'].values[:, None]))
+    df_final['open_trades'] = mask.sum(axis=1)
+
+    # Filter time periods with more open trades than the maximum allowed
+    df_filtered = df_final[df_final['open_trades'] > max_open_trades]
+
+    return df_filtered
 
 
 def trade_list_to_dataframe(trades: Union[List[Trade], List[LocalTrade]]) -> pd.DataFrame:
