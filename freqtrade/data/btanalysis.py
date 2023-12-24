@@ -348,24 +348,34 @@ def load_backtest_data(filename: Union[Path, str], strategy: Optional[str] = Non
 def analyze_trade_parallelism(results: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     """
     Find overlapping trades by expanding each trade once per period it was open
-    and then counting overlaps.
-    :param results: Results Dataframe - can be loaded
-    :param timeframe: Timeframe used for backtest
-    :return: dataframe with open-counts per time-period in timeframe
+    and then counting overlaps for cryptocurrency trading data.
+    :param results: Results DataFrame - can be loaded
+    :param timeframe: Timeframe used for backtest (e.g., '1h', '4h', '1d')
+    :return: DataFrame with open-counts per time-period in the specified timeframe
     """
-    from freqtrade.exchange import timeframe_to_minutes
-    timeframe_min = timeframe_to_minutes(timeframe)
-    dates = [pd.Series(pd.date_range(row[1]['open_date'], row[1]['close_date'],
-                                     freq=f"{timeframe_min}min"))
-             for row in results[['open_date', 'close_date']].iterrows()]
-    deltas = [len(x) for x in dates]
-    dates = pd.Series(pd.concat(dates).values, name='date')
-    df2 = pd.DataFrame(np.repeat(results.values, deltas, axis=0), columns=results.columns)
+    # Validate the input DataFrame
+    if 'open_date' not in results.columns or 'close_date' not in results.columns:
+        raise ValueError("Input DataFrame must contain 'open_date' and 'close_date' columns.")
+    
+    # Convert the 'open_date' and 'close_date' columns to datetime objects
+    results['open_date'] = pd.to_datetime(results['open_date'])
+    results['close_date'] = pd.to_datetime(results['close_date'])
 
-    df2 = pd.concat([dates, df2], axis=1)
-    df2 = df2.set_index('date')
-    df_final = df2.resample(f"{timeframe_min}min")[['pair']].count()
-    df_final = df_final.rename({'pair': 'open_trades'}, axis=1)
+    # Create a date range for the entire backtest period with the specified timeframe
+    min_date = results['open_date'].min()
+    max_date = results['close_date'].max()
+    date_range = pd.date_range(start=min_date.floor(timeframe), end=max_date.ceil(timeframe), freq=timeframe)
+
+    # Create an empty DataFrame with the date range
+    df_final = pd.DataFrame({'date': date_range})
+
+    # Count the number of overlapping trades for each time period efficiently
+    df_final['open_trades'] = np.sum(
+        ((results['open_date'].values.reshape(-1, 1) <= df_final['date'].values) &
+         (results['close_date'].values.reshape(-1, 1) >= df_final['date'].values)),
+        axis=0
+    )
+
     return df_final
 
 
