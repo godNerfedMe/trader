@@ -13,21 +13,45 @@ logger = logging.getLogger(__name__)
 def calculate_market_change(data: Dict[str, pd.DataFrame], column: str = "close") -> float:
     """
     Calculate market change based on "column".
-    Calculation is done by taking the first non-null and the last non-null element of each column
+    Calculation is done by taking the first non-null and the last non-null element of each DataFrame
     and calculating the pctchange as "(last - first) / first".
     Then the results per pair are combined as mean.
 
-    :param data: Dict of Dataframes, dict key should be pair.
+    :param data: Dict of DataFrames, dict key should be pair.
     :param column: Column in the original dataframes to use
-    :return:
+    :return: Market change as a percentage
     """
-    tmp_means = []
-    for pair, df in data.items():
-        start = df[column].dropna().iloc[0]
-        end = df[column].dropna().iloc[-1]
-        tmp_means.append((end - start) / start)
+    try:
+        if not data:
+            raise ValueError("Empty data dictionary provided.")
 
-    return float(np.mean(tmp_means))
+        pair_changes = []
+
+        for pair, df in data.items():
+            if column not in df.columns:
+                raise ValueError(f"Column '{column}' not found in DataFrame for pair '{pair}'.")
+
+            non_null_values = df[column].dropna()
+
+            if len(non_null_values) < 2:
+                raise ValueError(f"Not enough data points for pair '{pair}'.")
+
+            first_value = non_null_values.iloc[0]
+            last_value = non_null_values.iloc[-1]
+
+            pair_change = (last_value - first_value) / first_value
+            pair_changes.append(pair_change)
+
+        if not pair_changes:
+            raise ValueError("No valid data found for market change calculation.")
+
+        market_change = np.mean(pair_changes) * 100.0  # Return the mean market change as a percentage
+        return market_change
+
+    except Exception as e:
+        # Handle exceptions and log errors
+        logging.error(f"Error in calculate_market_change: {str(e)}")
+        return 0.0  # Return a default value or handle the error as needed
 
 
 def combine_dataframes_with_mean(data: Dict[str, pd.DataFrame],
@@ -194,35 +218,86 @@ def calculate_cagr(days_passed: int, starting_balance: float, final_balance: flo
     return (final_balance / starting_balance) ** (1 / (days_passed / 365)) - 1
 
 
-def calculate_expectancy(trades: pd.DataFrame) -> Tuple[float, float]:
+def calculate_expectancy(trades: pd.DataFrame, risk_free_rate: float = 0.0) -> Dict[str, float]:
     """
-    Calculate expectancy
+    Calculate trading expectancy metrics.
+    
     :param trades: DataFrame containing trades (requires columns close_date and profit_abs)
-    :return: expectancy, expectancy_ratio
+    :param risk_free_rate: Annual risk-free rate for calculating risk-adjusted metrics (default is 0.0)
+    
+    :return: A dictionary containing trading performance metrics.
     """
+    if len(trades) == 0:
+        return {"Error": "Trade dataframe is empty"}
 
-    expectancy = 0
-    expectancy_ratio = 100
+    metrics = {
+        "Total Trades": len(trades),
+        "Total Wins": len(trades[trades["profit_abs"] > 0]),
+        "Total Losses": len(trades[trades["profit_abs"] < 0])
+    }
 
-    if len(trades) > 0:
-        winning_trades = trades.loc[trades['profit_abs'] > 0]
-        losing_trades = trades.loc[trades['profit_abs'] < 0]
-        profit_sum = winning_trades['profit_abs'].sum()
-        loss_sum = abs(losing_trades['profit_abs'].sum())
-        nb_win_trades = len(winning_trades)
-        nb_loss_trades = len(losing_trades)
+    metrics["Win Rate"] = (metrics["Total Wins"] / metrics["Total Trades"]) * 100
+    metrics["Loss Rate"] = 100 - metrics["Win Rate"]
 
-        average_win = (profit_sum / nb_win_trades) if nb_win_trades > 0 else 0
-        average_loss = (loss_sum / nb_loss_trades) if nb_loss_trades > 0 else 0
-        winrate = (nb_win_trades / len(trades))
-        loserate = (nb_loss_trades / len(trades))
+    if metrics["Total Wins"] > 0:
+        metrics["Average Win"] = trades.loc[trades["profit_abs"] > 0, "profit_abs"].mean()
+    else:
+        metrics["Average Win"] = 0
 
-        expectancy = (winrate * average_win) - (loserate * average_loss)
-        if (average_loss > 0):
-            risk_reward_ratio = average_win / average_loss
-            expectancy_ratio = ((1 + risk_reward_ratio) * winrate) - 1
+    if metrics["Total Losses"] > 0:
+        metrics["Average Loss"] = abs(trades.loc[trades["profit_abs"] < 0, "profit_abs"].mean())
+    else:
+        metrics["Average Loss"] = 0
 
-    return expectancy, expectancy_ratio
+    metrics["Expectancy"] = (metrics["Average Win"] * metrics["Win Rate"] - metrics["Average Loss"] * metrics["Loss Rate"]) / 100
+
+    max_drawdown = calculate_max_drawdown(trades)
+    metrics["Max Drawdown"] = max_drawdown["max_drawdown"]
+    metrics["Max Drawdown Start Date"] = max_drawdown["max_drawdown_start_date"]
+    metrics["Max Drawdown End Date"] = max_drawdown["max_drawdown_end_date"]
+
+    if metrics["Total Losses"] > 0:
+        metrics["Profit Factor"] = metrics["Total Wins"] / metrics["Total Losses"]
+    else:
+        metrics["Profit Factor"] = None
+
+    metrics["Risk-Adjusted Return"] = calculate_risk_adjusted_return(metrics["Expectancy"], metrics["Max Drawdown"], risk_free_rate)
+
+    return metrics
+
+def calculate_max_drawdown(trades: pd.DataFrame) -> Dict[str, float]:
+    """
+    Calculate the maximum drawdown.
+    
+    :param trades: DataFrame containing trades (requires columns close_date and profit_abs)
+    
+    :return: A dictionary containing the maximum drawdown metrics.
+    """
+    if len(trades) == 0:
+        return {"max_drawdown": 0.0, "max_drawdown_start_date": None, "max_drawdown_end_date": None}
+
+    cumulative_profit = (1 + (trades["profit_abs"] / 100)).cumprod()
+    max_drawdown = ((cumulative_profit.cummax() - cumulative_profit) / cumulative_profit.cummax()).max()
+    max_drawdown_start_date = cumulative_profit[cumulative_profit.idxmax():].idxmin()
+    max_drawdown_end_date = cumulative_profit[cumulative_profit.idxmax():].idxmax()
+
+    return {"max_drawdown": max_drawdown, "max_drawdown_start_date": max_drawdown_start_date, "max_drawdown_end_date": max_drawdown_end_date}
+
+def calculate_risk_adjusted_return(expectancy: float, max_drawdown: float, risk_free_rate: float) -> float:
+    """
+    Calculate the risk-adjusted return using the Sharpe ratio.
+    
+    :param expectancy: Trading expectancy
+    :param max_drawdown: Maximum drawdown
+    :param risk_free_rate: Annual risk-free rate
+    
+    :return: Risk-adjusted return (Sharpe ratio)
+    """
+    if max_drawdown == 0:
+        return 0.0
+
+    sharpe_ratio = (expectancy - (risk_free_rate / 252)) / (max_drawdown / 100)
+    return sharpe_ratio
 
 
 def calculate_sortino(trades: pd.DataFrame, min_date: datetime, max_date: datetime,
